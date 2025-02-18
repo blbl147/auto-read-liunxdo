@@ -59,7 +59,7 @@
   // 更新初始数据的函数
   function updateInitialData() {
     localStorage.setItem("read", "true"); // 开始时自动滚动关闭
-    localStorage.setItem("autoLikeEnabled", "false"); //默认关闭自动点赞
+    localStorage.setItem("autoLikeEnabled", "true"); //默认关闭自动点赞
     console.log("执行了初始数据更新操作");
   }
   const delay = 2000; // 滚动检查的间隔（毫秒）
@@ -164,7 +164,7 @@
         checkScroll();
         if (isAutoLikeEnabled()) {
           //自动点赞
-          //autoLike();
+          autoLike();
         }
       }
     }
