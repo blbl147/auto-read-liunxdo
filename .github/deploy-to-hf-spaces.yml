@@ -5,6 +5,9 @@ on:
     branches:
       - dev
       - main
+    paths-ignore:
+      - '.github/workflows/cron_*.yaml'
+      - '.github/workflows/cron_*.yml'
   workflow_dispatch:
 
 jobs:
