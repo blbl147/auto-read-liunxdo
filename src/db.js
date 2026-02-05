@@ -40,7 +40,7 @@ const pool = new Pool({
   connectionString: process.env.POSTGRES_URI,
   max: 5,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000,
+  connectionTimeoutMillis: 15000, // 增加到15秒，适应跨区域网络延迟
   ssl: { rejectUnauthorized: false },
 });
 
@@ -49,7 +49,7 @@ const cockroachPool = new Pool({
   connectionString: process.env.COCKROACH_URI,
   max: 3,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000,
+  connectionTimeoutMillis: 15000, // 增加到15秒，适应跨区域网络延迟
   ssl: { rejectUnauthorized: false },
 });
 
@@ -59,7 +59,7 @@ const neonPool = new Pool({
   connectionString: process.env.NEON_URI,
   max: 3,
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000,
+  connectionTimeoutMillis: 15000, // 增加到15秒，适应跨区域网络延迟
   ssl: { rejectUnauthorized: false },
 });
 
@@ -114,15 +114,17 @@ async function initMongoDB() {
 
 // 所有数据库连接池数组 (PostgreSQL)
 const allPools = [
-  { name: "Aiven PostgreSQL", pool: pool },
+  //注释以下开启数据库
+  // { name: "Aiven PostgreSQL", pool: pool },
   { name: "CockroachDB", pool: cockroachPool },
   // { name: "Neon", pool: neonPool },
 ];
 
 // 获取所有数据库连接数组 (包括 MongoDB 和 MySQL)
 async function getAllDatabases() {
-  const mongoDb = await initMongoDB();
-  const mysqlPool = await initMySQL();
+    //注释以下开启数据库
+  // const mongoDb = await initMongoDB();
+  // const mysqlPool = await initMySQL();
 
   return [
     ...allPools,
@@ -319,9 +321,9 @@ export async function isGuidExists(guid) {
     return false;
   }
 
-  // 优先查询主数据库 (Aiven PostgreSQL)
+  // 优先查询主数据库 (CockroachDB)
   try {
-    const res = await pool.query(
+    const res = await cockroachPool.query(
       "SELECT 1 FROM posts WHERE guid = $1 LIMIT 1",
       [guid]
     );
