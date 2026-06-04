@@ -57,8 +57,30 @@ if (fs.existsSync(".env.local")) {
   );
 }
 
-// 读取以分钟为单位的运行时间限制
-const runTimeLimitMinutes = process.env.RUN_TIME_LIMIT_MINUTES || 20;
+function readIntegerEnv(name, fallback) {
+  const value = process.env[name];
+  if (value === undefined || value === "") return fallback;
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function randomIntInclusive(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+// 读取以分钟为单位的运行时间限制。仅在显式启用时随机运行 18-30 分钟，避免影响其它 workflow。
+const randomRunTimeEnabled = process.env.RANDOM_RUN_TIME_ENABLED === "true";
+const configuredRunTimeMin = Math.max(
+  1,
+  readIntegerEnv("RUN_TIME_RANDOM_MINUTES_MIN", 18),
+);
+const configuredRunTimeMax = Math.max(
+  configuredRunTimeMin,
+  readIntegerEnv("RUN_TIME_RANDOM_MINUTES_MAX", 30),
+);
+const runTimeLimitMinutes = randomRunTimeEnabled
+  ? randomIntInclusive(configuredRunTimeMin, configuredRunTimeMax)
+  : readIntegerEnv("RUN_TIME_LIMIT_MINUTES", 20);
 
 // 将分钟转换为毫秒
 const runTimeLimitMillis = runTimeLimitMinutes * 60 * 1000;
@@ -92,6 +114,27 @@ const isAutoLike = process.env.AUTO_LIKE !== "false"; // 默认开启，只有�
 const hideAccountInfo = process.env.HIDE_ACCOUNT_INFO !== "false"; // 默认隐藏账号信息，只有明确设置为"false"才显示
 const enableRssFetch = process.env.ENABLE_RSS_FETCH === "true"; // 是否开启抓取RSS，只有明确设置为"true"才开启，默认为false
 const enableTopicDataFetch = process.env.ENABLE_TOPIC_DATA_FETCH === "true"; // 是否开启抓取话题数据，只有明确设置为"true"才开启，默认为false
+const weeklyAutoLikeLimit = Math.max(
+  0,
+  readIntegerEnv(
+    "AUTO_LIKE_WEEKLY_LIMIT",
+    readIntegerEnv("WEEKLY_AUTO_LIKE_LIMIT", 10),
+  ),
+);
+const beijingWeekInfo = getBeijingWeekInfo();
+const weeklyAutoLikeBudgets = getWeeklyDailyBudgets(
+  weeklyAutoLikeLimit,
+  beijingWeekInfo.weekKey,
+);
+const todayAutoLikeBudget =
+  isAutoLike && !isLikeSpecificUser
+    ? weeklyAutoLikeBudgets[beijingWeekInfo.dayIndex]
+    : 0;
+const accountAutoLikeLimits = distributeBudget(
+  todayAutoLikeBudget,
+  totalAccounts,
+  `${beijingWeekInfo.weekKey}:${beijingWeekInfo.dayIndex}`,
+);
 
 // 账号名脱敏函数，默认仅显示首字母加***
 function maskUsername(username) {
@@ -107,6 +150,9 @@ console.log(
   `话题数据抓取功能状态: ${
     enableTopicDataFetch ? "开启" : "关闭"
   } (环境变量值: "${process.env.ENABLE_TOPIC_DATA_FETCH || ''}")，勿设置`
+);
+console.log(
+  `自动随机点赞预算: weekly=${weeklyAutoLikeLimit}, week=${beijingWeekInfo.weekKey}, date=${beijingWeekInfo.dateKey}, today=${todayAutoLikeBudget}, perAccount=${accountAutoLikeLimits.join(",")}`,
 );
 
 // 代理配置
@@ -217,6 +263,63 @@ function delayClick(time) {
   });
 }
 
+function getBeijingWeekInfo(date = new Date()) {
+  const beijingDate = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+  const year = beijingDate.getUTCFullYear();
+  const month = beijingDate.getUTCMonth();
+  const day = beijingDate.getUTCDate();
+  const dayOfWeek = beijingDate.getUTCDay();
+  const dayIndex = (dayOfWeek + 6) % 7; // Monday = 0, Sunday = 6
+  const monday = new Date(Date.UTC(year, month, day - dayIndex));
+  const dateKey = `${year}-${String(month + 1).padStart(2, "0")}-${String(
+    day,
+  ).padStart(2, "0")}`;
+
+  return {
+    dateKey,
+    dayIndex,
+    weekKey: monday.toISOString().slice(0, 10),
+  };
+}
+
+function seededRandom(seed) {
+  let hash = 2166136261;
+  for (let i = 0; i < seed.length; i++) {
+    hash ^= seed.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) / 4294967296;
+}
+
+function getWeeklyDailyBudgets(weeklyLimit, weekKey) {
+  const budgets = Array(7).fill(0);
+  for (let i = 0; i < weeklyLimit; i++) {
+    const day = Math.floor(seededRandom(`${weekKey}:like:${i}`) * 7);
+    budgets[day]++;
+  }
+  return budgets;
+}
+
+function shuffledIndexes(count, seed) {
+  const indexes = Array.from({ length: count }, (_, index) => index);
+  for (let i = indexes.length - 1; i > 0; i--) {
+    const j = Math.floor(seededRandom(`${seed}:${i}`) * (i + 1));
+    [indexes[i], indexes[j]] = [indexes[j], indexes[i]];
+  }
+  return indexes;
+}
+
+function distributeBudget(totalBudget, accountCount, seed) {
+  const budgets = Array(accountCount).fill(0);
+  if (totalBudget <= 0 || accountCount <= 0) return budgets;
+
+  const accountOrder = shuffledIndexes(accountCount, seed);
+  for (let i = 0; i < totalBudget; i++) {
+    budgets[accountOrder[i % accountCount]]++;
+  }
+  return budgets;
+}
+
 (async () => {
   try {
     // 有Cookie则跳过密码数量校验
@@ -234,6 +337,7 @@ function delayClick(time) {
     const loginTasks = usernames.map((username, index) => {
       const password = passwords[index] || "";
       const cookie = cookiesEnv[index] ? cookiesEnv[index].trim() : null;
+      const autoLikeLimit = accountAutoLikeLimits[index] || 0;
       const delay = (index % maxConcurrentAccounts) * delayBetweenInstances; // 使得每一组内的浏览器可以分开启动
       return () => {
         // 确保这里返回的是函数,因为settimeout本身是异步的所以必须在外面给他一个promise await才能让它同步的等待这个时间才能执行
@@ -243,7 +347,7 @@ function delayClick(time) {
         // };  更好理解
         return new Promise((resolve, reject) => {
           setTimeout(() => {
-            launchBrowserForUser(username, password, cookie)
+            launchBrowserForUser(username, password, cookie, autoLikeLimit)
               .then(resolve)
               .catch(reject);
           }, delay);
@@ -307,7 +411,12 @@ function parseCookieString(cookieStr, domain) {
     });
 }
 
-async function launchBrowserForUser(username, password, cookie = null) {
+async function launchBrowserForUser(
+  username,
+  password,
+  cookie = null,
+  autoLikeLimit = 0,
+) {
   let browser = null; // 在 try 之外声明 browser 变量
   try {
     console.log("当前用户:", maskUsername(username));
@@ -437,7 +546,7 @@ async function launchBrowserForUser(username, password, cookie = null) {
 
     //真正执行阅读脚本
     let externalScriptPath;
-    if (isLikeSpecificUser === "true") {
+    if (isLikeSpecificUser) {
       const randomChoice = Math.random() < 0.5; // 生成一个随机数，50% 概率为 true
       if (randomChoice) {
         externalScriptPath = path.join(
@@ -459,21 +568,32 @@ async function launchBrowserForUser(username, password, cookie = null) {
       );
     }
     const externalScript = fs.readFileSync(externalScriptPath, "utf8");
+    const accountAutoLikeEnabled = isLikeSpecificUser
+      ? isAutoLike
+      : isAutoLike && autoLikeLimit > 0;
+    const injectedAutoLikeLimit = isLikeSpecificUser ? null : autoLikeLimit;
+    console.log(
+      `Account ${maskUsername(username)} auto-like enabled=${accountAutoLikeEnabled}, limit=${injectedAutoLikeLimit ?? "default"}`,
+    );
 
     // 在每个新的文档加载时执行外部脚本
     await page.evaluateOnNewDocument(
       (...args) => {
-        const [specificUser, scriptToEval, isAutoLike] = args;
-        localStorage.setItem("read", true);
+        const [specificUser, scriptToEval, isAutoLike, autoLikeLimit] = args;
+        localStorage.setItem("read", "true");
         localStorage.setItem("specificUser", specificUser);
         localStorage.setItem("isFirstRun", "false");
-        localStorage.setItem("autoLikeEnabled", isAutoLike);
+        localStorage.setItem("autoLikeEnabled", isAutoLike ? "true" : "false");
+        if (Number.isFinite(autoLikeLimit) && autoLikeLimit >= 0) {
+          localStorage.setItem("likeLimit", String(autoLikeLimit));
+        }
         console.log("当前点赞用户：", specificUser);
         eval(scriptToEval);
       },
       specificUser,
       externalScript,
-      isAutoLike
+      accountAutoLikeEnabled,
+      injectedAutoLikeLimit,
     ); //变量必须从外部显示的传入, 因为在浏览器上下文它是读取不了的
     // 添加一个监听器来监听每次页面加载完成的事件
     page.on("load", async () => {
@@ -499,19 +619,23 @@ async function launchBrowserForUser(username, password, cookie = null) {
     // Ensure automation injected after navigation (fallback in case init-script failed)
     try {
       await page.evaluate(
-        (specificUser, scriptToEval, isAutoLike) => {
+        (specificUser, scriptToEval, isAutoLike, autoLikeLimit) => {
           if (!window.__autoInjected) {
-            localStorage.setItem("read", true);
+            localStorage.setItem("read", "true");
             localStorage.setItem("specificUser", specificUser);
             localStorage.setItem("isFirstRun", "false");
-            localStorage.setItem("autoLikeEnabled", isAutoLike);
+            localStorage.setItem("autoLikeEnabled", isAutoLike ? "true" : "false");
+            if (Number.isFinite(autoLikeLimit) && autoLikeLimit >= 0) {
+              localStorage.setItem("likeLimit", String(autoLikeLimit));
+            }
             try { eval(scriptToEval); } catch (e) { console.error("eval external script failed", e); }
             window.__autoInjected = true;
           }
         },
         specificUser,
         externalScript,
-        isAutoLike
+        accountAutoLikeEnabled,
+        injectedAutoLikeLimit,
       );
     } catch (e) {
       console.warn(`Post-navigation inject failed: ${e && e.message ? e.message : e}`);

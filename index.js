@@ -25,11 +25,11 @@
     "https://meta.discourse.org",
     "https://meta.appinn.net",
     "https://community.openai.com",
-    "https://idcflare.com/",
+    "https://idcflare.com",
   ];
   const commentLimit = 1000;
   const topicListLimit = 100;
-  const likeLimit = 50;
+  const likeLimit = readNonNegativeInt(localStorage.getItem("likeLimit"), 10);
   // 获取当前页面的URL
   const currentURL = window.location.href;
 
@@ -68,6 +68,22 @@
   let scrollInterval = null;
   let checkScrollTimeout = null;
   let autoLikeInterval = null;
+
+  function readNonNegativeInt(value, fallback) {
+    const parsed = parseInt(value, 10);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+  }
+
+  function getBeijingWeekKey(date = new Date()) {
+    const beijingDate = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+    const year = beijingDate.getUTCFullYear();
+    const month = beijingDate.getUTCMonth();
+    const day = beijingDate.getUTCDate();
+    const dayOfWeek = beijingDate.getUTCDay();
+    const dayIndex = (dayOfWeek + 6) % 7; // Monday = 0
+    const monday = new Date(Date.UTC(year, month, day - dayIndex));
+    return monday.toISOString().slice(0, 10);
+  }
 
   function scrollToBottomSlowly(distancePerStep = 20, delayPerStep = 50) {
     if (scrollInterval !== null) {
@@ -188,27 +204,17 @@
     }
   });
 
-  // 获取当前时间戳
-  const currentTime = Date.now();
-  // 获取存储的时间戳
-  const defaultTimestamp = new Date("1999-01-01T00:00:00Z").getTime(); //默认值为1999年
-  const storedTime = parseInt(
-    localStorage.getItem("clickCounterTimestamp") ||
-      defaultTimestamp.toString(),
-    10
-  );
-
   // 获取当前的点击计数，如果不存在则初始化为0
   let clickCounter = parseInt(localStorage.getItem("clickCounter") || "0", 10);
-  // 检查是否超过24小时（24小时 = 24 * 60 * 60 * 1000 毫秒）
-  if (currentTime - storedTime > 24 * 60 * 60 * 1000) {
-    // 超过24小时，清空点击计数器并更新时间戳
+  const currentWeekKey = getBeijingWeekKey();
+  const storedWeekKey = localStorage.getItem("clickCounterWeekKey");
+  if (storedWeekKey !== currentWeekKey) {
     clickCounter = 0;
     localStorage.setItem("clickCounter", "0");
-    localStorage.setItem("clickCounterTimestamp", currentTime.toString());
+    localStorage.setItem("clickCounterWeekKey", currentWeekKey);
   }
 
-  console.log(`Initial clickCounter: ${clickCounter}`);
+  console.log(`Initial clickCounter: ${clickCounter}, likeLimit: ${likeLimit}`);
   function triggerClick(button) {
     const event = new MouseEvent("click", {
       bubbles: true,
@@ -219,7 +225,13 @@
   }
 
   function autoLike() {
-    console.log(`Initial clickCounter: ${clickCounter}`);
+    console.log(`Initial clickCounter: ${clickCounter}, likeLimit: ${likeLimit}`);
+    if (likeLimit <= 0 || clickCounter >= likeLimit) {
+      console.log(`Auto-like skipped because likeLimit is ${likeLimit}.`);
+      localStorage.setItem("autoLikeEnabled", "false");
+      return;
+    }
+
     // 寻找所有的discourse-reactions-reaction-button
     const buttons = document.querySelectorAll(
       ".discourse-reactions-reaction-button"
@@ -233,10 +245,11 @@
     console.log(`Found ${buttons.length} buttons.`); // 调试信息
 
     // 逐个点击找到的按钮
+    let scheduledLikes = 0;
     buttons.forEach((button, index) => {
       if (
         (button.title !== "点赞此帖子" && button.title !== "Like this post") ||
-        clickCounter >= likeLimit
+        clickCounter + scheduledLikes >= likeLimit
       ) {
         return;
       }
@@ -250,8 +263,14 @@
 
       // 点赞间隔时间也随机（2~5秒之间）
       const randomDelay = 2000 + Math.floor(Math.random() * 3000);
+      scheduledLikes++;
 
       autoLikeInterval = setTimeout(() => {
+        if (clickCounter >= likeLimit) {
+          localStorage.setItem("autoLikeEnabled", "false");
+          return;
+        }
+
         // 模拟点击
         triggerClick(button); // 使用自定义的触发点击方法
         console.log(`Clicked like button ${index + 1}`);
@@ -267,7 +286,7 @@
         } else {
           console.log("clickCounter:", clickCounter);
         }
-      }, index * randomDelay); // 每次点赞的延迟为随机值
+      }, scheduledLikes * randomDelay); // 每次点赞的延迟为随机值
     });
   }
   const button = document.createElement("button");
