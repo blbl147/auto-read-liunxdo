@@ -1,0 +1,68 @@
+name: readLike smoke test
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_seconds:
+        description: "Total browsing test seconds"
+        required: false
+        default: "90"
+      topic_count:
+        description: "Number of topics to open"
+        required: false
+        default: "2"
+      account_index:
+        description: "Zero-based account index"
+        required: false
+        default: "0"
+
+jobs:
+  smoke:
+    runs-on: windows-latest
+    timeout-minutes: 8
+    env:
+      USERNAMES: ${{ secrets.USERNAMES }}
+      PASSWORDS: ${{ secrets.PASSWORDS }}
+      COOKIES: ${{ secrets.COOKIES }}
+      WEBSITE: ${{ secrets.WEBSITE }}
+      SMOKE_TEST_SECONDS: ${{ inputs.test_seconds }}
+      SMOKE_TOPIC_COUNT: ${{ inputs.topic_count }}
+      SMOKE_ACCOUNT_INDEX: ${{ inputs.account_index }}
+      AUTO_LIKE: "false"
+      BROWSER_HEADLESS: "true"
+      BROWSER_LAUNCH_RETRIES: "2"
+      PROXY_URL: ${{ secrets.PROXY_URL }}
+      PROXY_TYPE: ${{ secrets.PROXY_TYPE }}
+      PROXY_HOST: ${{ secrets.PROXY_HOST }}
+      PROXY_PORT: ${{ secrets.PROXY_PORT }}
+      PROXY_USERNAME: ${{ secrets.PROXY_USERNAME }}
+      PROXY_PASSWORD: ${{ secrets.PROXY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Cache node modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run browsing smoke test
+        run: node readlike_smoke_test.js
+
+      - name: Upload smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: readlike-smoke-artifacts
+          path: smoke-artifacts
+          if-no-files-found: ignore

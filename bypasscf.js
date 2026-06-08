@@ -94,6 +94,7 @@ const shutdownTimer = setTimeout(() => {
   console.log("时间到,Reached time limit, shutting down the process...");
   process.exit(0); // 退出进程
 }, runTimeLimitMillis);
+let healthServer = null;
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const chatId = process.env.TELEGRAM_CHAT_ID;
@@ -263,6 +264,129 @@ function delayClick(time) {
   });
 }
 
+function readBooleanEnv(name, fallback) {
+  const value = process.env[name];
+  if (value === undefined || value === "") return fallback;
+  const normalized = String(value).trim().toLowerCase();
+  if (["true", "1", "yes", "y", "on"].includes(normalized)) return true;
+  if (["false", "0", "no", "n", "off"].includes(normalized)) return false;
+  if (normalized === "auto") return fallback;
+  return fallback;
+}
+
+function getBrowserHeadlessMode() {
+  const ciDefault = process.env.GITHUB_ACTIONS === "true" || process.env.CI === "true";
+  const fallback = ciDefault ? true : process.env.ENVIRONMENT !== "dev";
+  return readBooleanEnv("BROWSER_HEADLESS", readBooleanEnv("HEADLESS", fallback));
+}
+
+function getBrowserLaunchArgs() {
+  return [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--window-size=1280,800",
+  ];
+}
+
+function resolveChromeExecutablePath() {
+  const candidates = [
+    process.env.PUPPETEER_EXECUTABLE_PATH,
+    process.env.CHROME_PATH,
+    process.env.GOOGLE_CHROME_BIN,
+    process.platform === "win32"
+      ? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+      : null,
+    process.platform === "win32"
+      ? "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe"
+      : null,
+    process.platform === "darwin"
+      ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+      : null,
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) return candidate;
+    } catch {}
+  }
+
+  try {
+    const bundledPath = puppeteer.executablePath?.();
+    if (bundledPath && fs.existsSync(bundledPath)) return bundledPath;
+  } catch {}
+
+  return null;
+}
+
+async function launchWithPuppeteer(browserOptions) {
+  const launchOptions = {
+    ...browserOptions,
+    defaultViewport: { width: 1280, height: 800 },
+  };
+  delete launchOptions.proxy;
+
+  const executablePath = resolveChromeExecutablePath();
+  if (executablePath) {
+    launchOptions.executablePath = executablePath;
+    console.warn(`Falling back to puppeteer.launch with Chrome: ${executablePath}`);
+  } else {
+    launchOptions.channel = process.env.PUPPETEER_CHANNEL || "chrome";
+    console.warn(`Falling back to puppeteer.launch with channel: ${launchOptions.channel}`);
+  }
+
+  const browser = await puppeteer.launch(launchOptions);
+  const page = await browser.newPage();
+  const proxyConfig = getProxyConfig();
+  if (proxyConfig?.username && proxyConfig?.password) {
+    await page.authenticate({
+      username: proxyConfig.username,
+      password: proxyConfig.password,
+    });
+  }
+  return { page, browser };
+}
+
+async function createBrowserPage(browserOptions) {
+  const maxAttempts = Math.max(1, readIntegerEnv("BROWSER_LAUNCH_RETRIES", 3));
+  let lastError;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const { connect } = await import("puppeteer-real-browser");
+      return await connect(browserOptions);
+    } catch (error) {
+      lastError = error;
+      console.warn(
+        `puppeteer-real-browser launch failed (${attempt}/${maxAttempts}): ${
+          error && error.message ? error.message : error
+        }`,
+      );
+      if (attempt < maxAttempts) {
+        await delayClick(3000 * attempt);
+      }
+    }
+  }
+
+  try {
+    return await launchWithPuppeteer(browserOptions);
+  } catch (fallbackError) {
+    const firstMessage = lastError && lastError.message ? lastError.message : lastError;
+    const fallbackMessage =
+      fallbackError && fallbackError.message ? fallbackError.message : fallbackError;
+    throw new Error(
+      `Browser launch failed. puppeteer-real-browser: ${firstMessage}; puppeteer.launch fallback: ${fallbackMessage}`,
+    );
+  }
+}
+
 function getBeijingWeekInfo(date = new Date()) {
   const beijingDate = new Date(date.getTime() + 8 * 60 * 60 * 1000);
   const year = beijingDate.getUTCFullYear();
@@ -393,7 +517,15 @@ function distributeBudget(totalBudget, accountCount, seed) {
     // 错误处理逻辑
     console.error("发生错误：", error);
     if (token && chatId) {
-      sendToTelegram(`${error.message}`);
+      await sendToTelegram(`${error.message}`);
+    }
+    clearTimeout(shutdownTimer);
+    process.exitCode = 1;
+    if (healthServer && typeof healthServer.close === "function") {
+      healthServer.close(() => process.exit(1));
+      setTimeout(() => process.exit(1), 1000).unref();
+    } else {
+      process.exit(1);
     }
   }
 })();
@@ -421,8 +553,8 @@ async function launchBrowserForUser(
   try {
     console.log("当前用户:", maskUsername(username));
     const browserOptions = {
-      headless: "auto",
-      args: ["--no-sandbox", "--disable-setuid-sandbox"], // Linux 需要的安全设置
+      headless: getBrowserHeadlessMode(),
+      args: getBrowserLaunchArgs(),
     };
 
     // 添加代理配置到浏览器选项
@@ -445,8 +577,7 @@ async function launchBrowserForUser(
       }
     }
 
-    var { connect } = await import("puppeteer-real-browser");
-    const { page, browser: newBrowser } = await connect(browserOptions);
+    const { page, browser: newBrowser } = await createBrowserPage(browserOptions);
     browser = newBrowser; // 将 browser 初始化
     // 启动截图功能
     // takeScreenshots(page);
@@ -699,13 +830,253 @@ async function launchBrowserForUser(
   } catch (err) {
     // throw new Error(err);
     console.log("Error in launchBrowserForUser:", err);
-    if (token && chatId) {
-      sendToTelegram(`${err.message}`);
+    if (browser && typeof browser.close === "function") {
+      try {
+        await browser.close();
+      } catch (closeError) {
+        console.warn(
+          `Failed to close browser after error: ${
+            closeError && closeError.message ? closeError.message : closeError
+          }`,
+        );
+      }
     }
-    return { browser }; // 错误时仍然返回 browser
+    if (token && chatId) {
+      await sendToTelegram(`${err.message}`);
+    }
+    throw err;
   }
 }
+async function getPageDiagnostics(page) {
+  let title = "";
+  let bodySnippet = "";
+  try {
+    title = await page.title();
+  } catch {}
+  try {
+    bodySnippet = await page.evaluate(() =>
+      (document.body && document.body.innerText ? document.body.innerText : "")
+        .replace(/\s+/g, " ")
+        .slice(0, 240),
+    );
+  } catch {}
+
+  return {
+    url: typeof page.url === "function" ? page.url() : "",
+    title,
+    bodySnippet,
+  };
+}
+
+async function waitForLoginForm(page, timeout = 5000) {
+  try {
+    await page.waitForSelector("#login-account-name", { timeout });
+    await page.waitForSelector("#login-account-password", { timeout: 5000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function clickVisibleLoginButton(page) {
+  try {
+    return await page.evaluate(() => {
+      const candidates = Array.from(
+        document.querySelectorAll("button, a, .login-button"),
+      );
+      const loginKeywords = [
+        "login",
+        "log in",
+        "sign in",
+        "\u767b\u5f55",
+        "\u767b\u5165",
+      ];
+      const loginButton = candidates.find((element) => {
+        const text = [
+          element.textContent || "",
+          element.getAttribute("title") || "",
+          element.getAttribute("aria-label") || "",
+          typeof element.className === "string" ? element.className : "",
+        ]
+          .join(" ")
+          .toLowerCase();
+
+        return (
+          element.classList.contains("login-button") ||
+          loginKeywords.some((keyword) => text.includes(keyword.toLowerCase()))
+        );
+      });
+
+      if (!loginButton) return false;
+      loginButton.click();
+      return true;
+    });
+  } catch (error) {
+    console.warn(
+      `Click login button failed: ${error && error.message ? error.message : error}`,
+    );
+    return false;
+  }
+}
+
+async function openLoginForm(page) {
+  const navTimeout = parseInt(
+    process.env.NAV_TIMEOUT_MS || process.env.NAV_TIMEOUT || "120000",
+    10,
+  );
+
+  if (await waitForLoginForm(page, 2000)) return;
+
+  if (await clickVisibleLoginButton(page)) {
+    await delayClick(1500);
+    if (await waitForLoginForm(page, 8000)) return;
+  }
+
+  try {
+    await page.goto(new URL("/login", loginUrl).toString(), {
+      waitUntil: "domcontentloaded",
+      timeout: navTimeout,
+    });
+    await delayClick(1500);
+    if (await waitForLoginForm(page, 10000)) return;
+    if (await clickVisibleLoginButton(page)) {
+      await delayClick(1500);
+      if (await waitForLoginForm(page, 8000)) return;
+    }
+  } catch (error) {
+    console.warn(
+      `Open /login failed: ${error && error.message ? error.message : error}`,
+    );
+  }
+
+  const fallbackTopic =
+    loginUrl === "https://meta.appinn.net"
+      ? "https://meta.appinn.net/t/topic/52006"
+      : new URL("/t/topic/1", loginUrl).toString();
+
+  try {
+    await page.goto(fallbackTopic, {
+      waitUntil: "domcontentloaded",
+      timeout: navTimeout,
+    });
+    await delayClick(2000);
+    try {
+      await page.waitForSelector(".discourse-reactions-reaction-button", {
+        timeout: 8000,
+      });
+      await page.click(".discourse-reactions-reaction-button");
+      await delayClick(1500);
+      if (await waitForLoginForm(page, 10000)) return;
+    } catch (error) {
+      console.log(
+        `Like button did not open login form: ${
+          error && error.message ? error.message : error
+        }`,
+      );
+    }
+
+    if (await clickVisibleLoginButton(page)) {
+      await delayClick(1500);
+      if (await waitForLoginForm(page, 8000)) return;
+    }
+  } catch (error) {
+    console.warn(
+      `Open fallback topic failed: ${error && error.message ? error.message : error}`,
+    );
+  }
+
+  const diagnostics = await getPageDiagnostics(page);
+  throw new Error(
+    `Login form did not open. url=${diagnostics.url}, title=${diagnostics.title}, body=${diagnostics.bodySnippet}`,
+  );
+}
+
+function finalLoginError(message) {
+  const error = new Error(message);
+  error.noRetry = true;
+  return error;
+}
+
+async function getLoginAlertText(page) {
+  const alertError = await page.$(".alert.alert-error");
+  if (!alertError) return "";
+  return await page.evaluate((el) => el.innerText, alertError);
+}
+
+async function robustLogin(page, username, password, retryCount = 3) {
+  try {
+    await openLoginForm(page);
+    await delayClick(1000);
+
+    await page.click("#login-account-name", { clickCount: 3 });
+    await page.type("#login-account-name", username, { delay: 100 });
+    await delayClick(1000);
+
+    await page.waitForSelector("#login-account-password", { timeout: 30000 });
+    await page.click("#login-account-password", { clickCount: 3 });
+    await page.type("#login-account-password", password, { delay: 100 });
+    await delayClick(1000);
+
+    await page.waitForSelector("#login-button", { timeout: 30000 });
+    const navigation = page
+      .waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 })
+      .catch(() => null);
+    await page.click("#login-button", { force: true });
+    await navigation;
+    await delayClick(3000);
+
+    const alertText = await getLoginAlertText(page);
+    if (alertText) {
+      const lowerAlert = alertText.toLowerCase();
+      if (lowerAlert.includes("incorrect") || alertText.includes("\u4e0d\u6b63\u786e")) {
+        throw finalLoginError(
+          `Credential login failed for ${maskUsername(username)}: ${alertText}`,
+        );
+      }
+      throw finalLoginError(
+        `Login form returned an error for ${maskUsername(username)}: ${alertText}`,
+      );
+    }
+
+    try {
+      await page.waitForSelector("img.avatar", { timeout: 15000 });
+    } catch {
+      const diagnostics = await getPageDiagnostics(page);
+      console.warn(
+        `Avatar not visible after login submit. url=${diagnostics.url}, title=${diagnostics.title}`,
+      );
+    }
+  } catch (error) {
+    if (error && error.noRetry) throw error;
+    if (retryCount > 0) {
+      console.log(
+        `Retrying login form (${retryCount} retries left): ${
+          error && error.message ? error.message : error
+        }`,
+      );
+      try {
+        await page.reload({
+          waitUntil: "domcontentloaded",
+          timeout: parseInt(
+            process.env.NAV_TIMEOUT_MS || process.env.NAV_TIMEOUT || "120000",
+            10,
+          ),
+        });
+      } catch {}
+      await delayClick(2000);
+      return await robustLogin(page, username, password, retryCount - 1);
+    }
+
+    throw new Error(
+      `Login failed for ${maskUsername(username)}: ${
+        error && error.message ? error.message : error
+      }`,
+    );
+  }
+}
+
 async function login(page, username, password, retryCount = 3) {
+  return await robustLogin(page, username, password, retryCount);
   // 使用XPath查询找到包含"登录"或"login"文本的按钮
   let loginButtonFound = await page.evaluate(() => {
     let loginButton = Array.from(document.querySelectorAll("button")).find(
@@ -834,7 +1205,7 @@ async function navigatePage(url, page, browser) {
     if (Date.now() - startTime > 35000) {
       console.log("Timeout exceeded, aborting actions.");
       sendToTelegram(`超时了,无法通过Cloudflare验证`);
-      await browser.close();
+      throw new Error("Cloudflare challenge timed out.");
       // todo: 这里其实不能关的m因为我们是在最后统一关的你不能在这里关m如果你在这关,后面就会触发attempted to sue detached frame
       return; // 超时则退出函数
     }
@@ -953,7 +1324,7 @@ healthApp.get("/", (req, res) => {
     </html>
   `);
 });
-healthApp.listen(HEALTH_PORT, () => {
+healthServer = healthApp.listen(HEALTH_PORT, () => {
   console.log(
     `Health check endpoint is running at http://localhost:${HEALTH_PORT}/health`
   );

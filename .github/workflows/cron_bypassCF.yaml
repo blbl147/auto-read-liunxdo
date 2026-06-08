@@ -24,6 +24,8 @@ jobs:
       RANDOM_RUN_TIME_ENABLED: "true"
       RUN_TIME_RANDOM_MINUTES_MIN: "18"
       RUN_TIME_RANDOM_MINUTES_MAX: "30"
+      BROWSER_HEADLESS: "true"
+      BROWSER_LAUNCH_RETRIES: "3"
       MAX_CONCURRENT_ACCOUNTS: ${{ secrets.MAX_CONCURRENT_ACCOUNTS }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -50,15 +52,15 @@ jobs:
       AIVEN_MYSQL_URI: ${{ secrets.AIVEN_MYSQL_URI }}
       MONGO_URI: ${{ secrets.MONGO_URI }}
     steps:
-      - uses: actions/checkout@v3 # 检出仓库
+      - uses: actions/checkout@v4 # 检出仓库
 
       - name: Use Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
 
       - name: Cache node modules
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: node_modules
           key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
