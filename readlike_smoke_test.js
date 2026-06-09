@@ -44,6 +44,10 @@ try {
   console.log(`[config] WEBSITE=${loginUrl}`);
   console.log(`[config] SMOKE_TEST_SECONDS=${smokeSeconds}`);
   console.log(`[config] SMOKE_TOPIC_COUNT=${topicCount}`);
+  console.log(`[config] BROWSER_HEADLESS=${browserHeadlessMode()}`);
+  console.log(
+    `[config] CF_WAIT_TIMEOUT_SECONDS=${readIntegerEnv("CF_WAIT_TIMEOUT_SECONDS", Math.round(readIntegerEnv("CF_WAIT_TIMEOUT_MS", 45000) / 1000))}`,
+  );
   console.log(`[config] account=${mask(username)} cookie=${cookie ? "yes" : "no"}`);
   console.log(`[network] current ip=${(await getCurrentIP()) || "unknown"}`);
 
@@ -54,11 +58,11 @@ try {
   page.setDefaultTimeout(30000);
   page.setDefaultNavigationTimeout(readIntegerEnv("NAV_TIMEOUT_MS", 120000));
 
-  await navigateAndWait(loginUrl);
-
   if (cookie) {
-    await loginWithCookie(cookie);
+    await preloadCookies(cookie);
+    await navigateAndWait(loginUrl);
   } else {
+    await navigateAndWait(loginUrl);
     if (!username || !password) {
       throw new Error("Missing USERNAMES/PASSWORDS or COOKIES for smoke test.");
     }
@@ -258,23 +262,31 @@ async function navigateAndWait(url) {
   console.log(`[page] title="${diagnostics.title}" url=${diagnostics.url}`);
 }
 
-async function waitForCloudflare(timeoutMs = 45000) {
+async function waitForCloudflare(
+  timeoutMs = readIntegerEnv(
+    "CF_WAIT_TIMEOUT_MS",
+    readIntegerEnv("CF_WAIT_TIMEOUT_SECONDS", 45) * 1000,
+  ),
+) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const title = await safeTitle();
     if (!title.includes("Just a moment") && !title.includes("\u8bf7\u7a0d\u5019")) return;
-    console.log(`[cloudflare] waiting title="${title}"`);
+    console.log(`[cloudflare] waiting title="${title}" elapsed=${Math.round((Date.now() - start) / 1000)}s`);
     await delay(2000);
   }
-  throw new Error("Cloudflare challenge did not clear during smoke test.");
+  const diagnostics = await pageDiagnostics();
+  throw new Error(
+    `Cloudflare challenge did not clear during smoke test. ${formatDiagnostics(diagnostics)}`,
+  );
 }
 
-async function loginWithCookie(cookieString) {
-  console.log("[login] using cookie");
+async function preloadCookies(cookieString) {
+  console.log("[login] preloading cookie before first navigation");
   const cookieObjects = parseCookieString(cookieString);
   if (cookieObjects.length === 0) throw new Error("COOKIES is set but no valid cookie pairs were parsed.");
   await page.setCookie(...cookieObjects);
-  await navigateAndWait(loginUrl);
+  console.log(`[login] preloaded ${cookieObjects.length} cookies`);
 }
 
 function parseCookieString(cookieString) {

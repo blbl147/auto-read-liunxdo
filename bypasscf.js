@@ -582,6 +582,12 @@ async function launchBrowserForUser(
     // 启动截图功能
     // takeScreenshots(page);
     //登录操作
+    if (cookie) {
+      const domain = new URL(loginUrl).hostname;
+      const cookieObjects = parseCookieString(cookie, domain);
+      await page.setCookie(...cookieObjects);
+      console.log(`Preloaded ${cookieObjects.length} cookies before first navigation.`);
+    }
     await navigatePage(loginUrl, page, browser);
     await delayClick(8000);
     // 设置额外的 headers

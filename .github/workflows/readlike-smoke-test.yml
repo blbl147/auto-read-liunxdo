@@ -15,6 +15,14 @@ on:
         description: "Zero-based account index"
         required: false
         default: "0"
+      headless:
+        description: "Run browser headless (true/false)"
+        required: false
+        default: "false"
+      cf_wait_seconds:
+        description: "Cloudflare wait timeout seconds"
+        required: false
+        default: "90"
 
 jobs:
   smoke:
@@ -25,11 +33,12 @@ jobs:
       PASSWORDS: ${{ secrets.PASSWORDS }}
       COOKIES: ${{ secrets.COOKIES }}
       WEBSITE: ${{ secrets.WEBSITE }}
-      SMOKE_TEST_SECONDS: ${{ inputs.test_seconds }}
-      SMOKE_TOPIC_COUNT: ${{ inputs.topic_count }}
-      SMOKE_ACCOUNT_INDEX: ${{ inputs.account_index }}
+      SMOKE_TEST_SECONDS: "${{ inputs.test_seconds }}"
+      SMOKE_TOPIC_COUNT: "${{ inputs.topic_count }}"
+      SMOKE_ACCOUNT_INDEX: "${{ inputs.account_index }}"
+      CF_WAIT_TIMEOUT_SECONDS: "${{ inputs.cf_wait_seconds }}"
       AUTO_LIKE: "false"
-      BROWSER_HEADLESS: "true"
+      BROWSER_HEADLESS: "${{ inputs.headless }}"
       BROWSER_LAUNCH_RETRIES: "2"
       PROXY_URL: ${{ secrets.PROXY_URL }}
       PROXY_TYPE: ${{ secrets.PROXY_TYPE }}
